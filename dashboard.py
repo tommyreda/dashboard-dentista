@@ -5,142 +5,298 @@ import os
 
 st.set_page_config(page_title="Studio Dentistico", layout="wide")
 
-# File CSV dove salviamo gli appuntamenti
-CSV_FILE = "appuntamenti.csv"
+CSV_PAZIENTI = "pazienti.csv"
+CSV_APPUNTAMENTI = "appuntamenti.csv"
 
-# Carica gli appuntamenti dal file se esiste
-def carica_appuntamenti():
-    if os.path.exists(CSV_FILE):
-        return pd.read_csv(CSV_FILE)
+# Configurazione orari e durate
+ORARI_LAVORO = {
+    'inizio_mattina': 9,
+    'fine_mattina': 13,
+    'inizio_pomeriggio': 14,
+    'fine_pomeriggio': 18,
+}
+
+DURATA_TRATTAMENTI = {
+    'Igiene': 30,
+    'Conservativa': 60,
+    'Ortodonzia': 45,
+    'Estrazione': 45,
+    'Altro': 30
+}
+
+def calcola_slot_disponibili(data, tipo_trattamento, df_app):
+    """Calcola gli slot liberi per una data"""
+    durata = DURATA_TRATTAMENTI.get(tipo_trattamento, 30)
+    slot_disponibili = []
+    
+    # Slot da 30 minuti
+    for ora in range(ORARI_LAVORO['inizio_mattina'], ORARI_LAVORO['fine_pomeriggio']):
+        # Salta pausa pranzo
+        if ora >= ORARI_LAVORO['fine_mattina'] and ora < ORARI_LAVORO['inizio_pomeriggio']:
+            continue
+        
+        for minuti in [0, 30]:
+            dt_slot = pd.Timestamp(f"{data.strftime('%Y-%m-%d')} {ora:02d}:{minuti:02d}")
+            dt_fine = dt_slot + timedelta(minutes=durata)
+            
+            # Controlla se slot è occupato
+            appuntamenti_giorno = df_app[df_app['Data'].dt.date == data.date()]
+            occupato = False
+            
+            for _, app in appuntamenti_giorno.iterrows():
+                app_inizio = app['Data']
+                app_durata = DURATA_TRATTAMENTI.get(app['Tipo'], 30)
+                app_fine = app_inizio + timedelta(minutes=app_durata)
+                
+                # Controlla sovrapposizione
+                if (dt_slot < app_fine) and (dt_fine > app_inizio):
+                    occupato = True
+                    break
+            
+            if not occupato and dt_fine.hour < ORARI_LAVORO['fine_pomeriggio']:
+                slot_disponibili.append(dt_slot)
+    
+    return slot_disponibili
+
+def carica_pazienti():
+    if os.path.exists(CSV_PAZIENTI):
+        return pd.read_csv(CSV_PAZIENTI)
     else:
-        # Dati iniziali fittizi
         return pd.DataFrame({
-            'Data': ['2026-05-01', '2026-05-05', '2026-05-10', '2026-05-15', '2026-05-20', '2026-05-25'],
-            'Paziente': ['Marco Rossi', 'Anna Bianchi', 'Luca Verdi', 'Sara Neri', 'Giorgio Blu', 'Giulia Rosa'],
+            'ID': [1, 2, 3, 4, 5],
+            'Nome': ['Marco', 'Anna', 'Luca', 'Sara', 'Giorgio'],
+            'Cognome': ['Rossi', 'Bianchi', 'Verdi', 'Neri', 'Blu'],
+            'Telefono': ['320 123 4567', '335 987 6543', '340 555 1234', '333 222 1111', '345 666 7777'],
+            'Data nascita': ['1985-03-15', '1990-07-22', '1988-11-30', '1992-01-10', '1980-05-20']
+        })
+
+def carica_appuntamenti():
+    if os.path.exists(CSV_APPUNTAMENTI):
+        df = pd.read_csv(CSV_APPUNTAMENTI)
+        df['Data'] = pd.to_datetime(df['Data'], format='mixed')
+        return df
+    else:
+        return pd.DataFrame({
+            'Data': ['2026-05-01 09:00', '2026-05-05 10:30', '2026-05-10 14:00', '2026-05-15 11:00', '2026-05-20 15:30', '2026-05-25 09:30'],
+            'Paziente ID': [1, 2, 1, 3, 4, 5],
             'Tipo': ['Igiene', 'Conservativa', 'Igiene', 'Ortodonzia', 'Estrazione', 'Igiene'],
             'Importo': [80, 150, 80, 200, 120, 80],
         })
 
-# Salva gli appuntamenti nel file
+def salva_pazienti(df):
+    df.to_csv(CSV_PAZIENTI, index=False)
+
 def salva_appuntamenti(df):
-    df.to_csv(CSV_FILE, index=False)
+    df['Data'] = pd.to_datetime(df['Data']).dt.strftime('%Y-%m-%d %H:%M')
+    df.to_csv(CSV_APPUNTAMENTI, index=False)
 
-# Carica i dati all'inizio
+df_pazienti = carica_pazienti()
 df_appuntamenti = carica_appuntamenti()
-df_appuntamenti['Data'] = pd.to_datetime(df_appuntamenti['Data'], format='mixed')
 
-# Sidebar
 with st.sidebar:
-    st.title("⚙️ Configurazione")
-    st.write("Studio: Dr. Rossi")
-    st.write("Mese: Maggio 2026")
-    st.divider()
-    if st.button("🔄 Ricarica dati"):
+    st.title("⚙️ Studio Dr. Rossi")
+    st.write("Maggio 2026")
+    if st.button("🔄 Ricarica"):
         st.rerun()
 
-# Titolo
 st.title("📊 Studio Dr. Rossi")
 st.subheader("Dashboard KPI - Maggio 2026")
 
-# --- KPI PRINCIPALI ---
-st.subheader("📈 KPI Principali")
-col1, col2, col3, col4 = st.columns(4)
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "👥 Pazienti", "📅 Appuntamenti", "⚙️ Gestione"])
 
-with col1:
-    st.metric("Appuntamenti maggio", len(df_appuntamenti), "+3 vs aprile")
-
-with col2:
-    st.metric("Incasso maggio", f"€{df_appuntamenti['Importo'].sum():.0f}", "+11% vs aprile")
-
-with col3:
-    st.metric("Media per appuntamento", f"€{df_appuntamenti['Importo'].mean():.0f}")
-
-with col4:
-    st.metric("Pazienti attivi", 312, "+8 questo mese")
-
-st.divider()
-
-# --- GRAFICI ---
-st.subheader("📊 Andamento")
-col1, col2 = st.columns(2)
-
-with col1:
-    st.write("Incasso mensile 2026")
-    dati_incasso = pd.DataFrame({
-        'Mese': ['Gen', 'Feb', 'Mar', 'Apr', 'Mag'],
-        'Incasso': [6800, 7200, 7900, 7800, 8640]
-    })
-    st.bar_chart(dati_incasso.set_index('Mese'), height=300)
-
-with col2:
-    st.write("Tipo di trattamento")
-    dati_trattamenti = pd.DataFrame({
-        'Tipo': ['Igiene', 'Conservativa', 'Ortodonzia', 'Estrazione'],
-        'Count': [38, 29, 21, 12]
-    })
-    st.bar_chart(dati_trattamenti.set_index('Tipo'), height=300)
-
-st.divider()
-
-# --- PAZIENTI DA RICHIAMARE ---
-st.subheader("🔔 Pazienti da richiamare")
-pazienti_richiamare = pd.DataFrame({
-    'Nome': ['Anna Ferretti', 'Marco Conti', 'Giulia Marini'],
-    'Ultimo appuntamento': ['6 mesi fa', 'Controllo non prenotato', 'Piano sospeso'],
-    'Priorità': ['⚠️ URGENTE', '⚠️ Da seguire', '⚠️ Da seguire']
-})
-st.dataframe(pazienti_richiamare, use_container_width=True, hide_index=True)
-
-st.divider()
-
-# --- REGISTRA NUOVO APPUNTAMENTO ---
-st.subheader("➕ Registra nuovo appuntamento")
-with st.form("nuovo_appuntamento"):
+# ===== TAB 1: DASHBOARD =====
+with tab1:
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Appuntamenti maggio", len(df_appuntamenti), "+3 vs aprile")
+    col2.metric("Incasso maggio", f"€{df_appuntamenti['Importo'].sum():.0f}", "+11% vs aprile")
+    col3.metric("No-show questo mese", 4, "2 da contattare")
+    col4.metric("Pazienti attivi", len(df_pazienti), "+2 questo mese")
+    
+    st.divider()
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        nome_paziente = st.text_input("Nome paziente")
-        tipo_trattamento = st.selectbox("Tipo di trattamento", 
-            ['Igiene', 'Conservativa', 'Ortodonzia', 'Estrazione', 'Altro'])
+        st.subheader("📈 Incasso mensile 2026")
+        dati_incasso = pd.DataFrame({
+            'Mese': ['Gen', 'Feb', 'Mar', 'Apr', 'Mag'],
+            'Incasso': [6800, 7200, 7900, 7800, 8640]
+        })
+        st.bar_chart(dati_incasso.set_index('Mese'), height=300)
     
     with col2:
-        data_appuntamento = st.date_input("Data appuntamento", value=datetime.now())
-        importo = st.number_input("Importo (€)", min_value=0, value=100)
+        st.subheader("📊 Tipo di trattamento")
+        dati_tipo = pd.DataFrame({
+            'Tipo': ['Igiene', 'Conservativa', 'Ortodonzia', 'Estrazione'],
+            'Count': [38, 29, 21, 12]
+        })
+        st.bar_chart(dati_tipo.set_index('Tipo'), height=300)
     
-    submitted = st.form_submit_button("Registra appuntamento")
+    st.divider()
     
-    if submitted:
-        if nome_paziente and importo > 0:
-            # Aggiungi il nuovo appuntamento al dataframe
-            nuovo_app = pd.DataFrame({
-                'Data': [data_appuntamento.strftime('%Y-%m-%d')],
-                'Paziente': [nome_paziente],
-                'Tipo': [tipo_trattamento],
-                'Importo': [importo]
-            })
-            df_appuntamenti = pd.concat([df_appuntamenti, nuovo_app], ignore_index=True)
-            salva_appuntamenti(df_appuntamenti)
-            st.success(f"✅ Appuntamento registrato: {nome_paziente} - {tipo_trattamento} - €{importo}")
-            st.rerun()
+    st.subheader("🔔 Pazienti da richiamare")
+    st.write("*Ultimi appuntamenti > 3 mesi fa*")
+    richiamare = pd.DataFrame({
+        'Nome': ['Anna Ferretti', 'Marco Conti', 'Giulia Marini'],
+        'Ultima visita': ['6 mesi fa', '4 mesi fa', '3.5 mesi fa'],
+        'Telefono': ['320 123 4567', '335 987 6543', '340 555 1234'],
+        'Priorità': ['⚠️ URGENTE', '⚠️ Da seguire', '⚠️ Da seguire']
+    })
+    st.dataframe(richiamare, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    st.subheader("❌ Cancellazioni e no-show")
+    st.write("*Ultimi 30 giorni*")
+    cancellazioni = pd.DataFrame({
+        'Paziente': ['Roberto Gallo', 'Lisa Neri', 'Paolo Verdi'],
+        'Data': ['2026-05-20', '2026-05-18', '2026-05-15'],
+        'Tipo': ['Conservativa', 'Igiene', 'No-show'],
+        'Telefono': ['333 222 1111', '345 666 7777', '328 999 0000'],
+        'Note': ['Ha detto rimando', 'Non si è presentato', 'Non ha riconfermato']
+    })
+    st.dataframe(cancellazioni, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    st.subheader("📦 Forniture in esaurimento")
+    st.write("*Ricordati di ordinare questi materiali*")
+    forniture = pd.DataFrame({
+        'Materiale': ['Dischi abrasivi 25mm', 'Detergente ultrasonico', 'Guanti nitrile taglia L', 'Mascherine FFP2', 'Frese diamantate set 5'],
+        'Quantità residua': [5, 2, 1, 8, 3],
+        'Livello minimo': [20, 5, 10, 20, 5],
+        'Status': ['⚠️ Finire', '⚠️ Finire', '🔴 ORDINARE SUBITO', '✅ OK', '⚠️ Finire']
+    })
+    st.dataframe(forniture, use_container_width=True, hide_index=True)
+
+# ===== TAB 2: PAZIENTI =====
+with tab2:
+    st.subheader("👥 Elenco pazienti")
+    st.dataframe(df_pazienti, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    st.subheader("📋 Storico paziente")
+    paziente_selezionato = st.selectbox(
+        "Seleziona paziente",
+        options=df_pazienti['ID'],
+        format_func=lambda x: f"{df_pazienti[df_pazienti['ID']==x]['Nome'].values[0]} {df_pazienti[df_pazienti['ID']==x]['Cognome'].values[0]}"
+    )
+    
+    storico = df_appuntamenti[df_appuntamenti['Paziente ID'] == paziente_selezionato]
+    if len(storico) > 0:
+        st.write(f"**Appuntamenti totali:** {len(storico)}")
+        st.write(f"**Spesa totale:** €{storico['Importo'].sum():.0f}")
+        df_storico_display = storico.copy()
+        df_storico_display['Data'] = pd.to_datetime(df_storico_display['Data']).dt.strftime('%d/%m/%Y %H:%M')
+        st.dataframe(df_storico_display[['Data', 'Tipo', 'Importo']], use_container_width=True, hide_index=True)
+    else:
+        st.info("Nessun appuntamento registrato")
+
+# ===== TAB 3: APPUNTAMENTI =====
+with tab3:
+    st.subheader("📅 Elenco appuntamenti")
+    if len(df_appuntamenti) > 0:
+        df_app_display = df_appuntamenti.copy()
+        df_app_display['Data'] = pd.to_datetime(df_app_display['Data']).dt.strftime('%d/%m/%Y %H:%M')
+        df_app_display['Paziente'] = df_app_display['Paziente ID'].apply(
+            lambda x: f"{df_pazienti[df_pazienti['ID']==x]['Nome'].values[0]} {df_pazienti[df_pazienti['ID']==x]['Cognome'].values[0]}"
+        )
+        st.dataframe(df_app_display[['Data', 'Paziente', 'Tipo', 'Importo']], use_container_width=True, hide_index=True)
+    else:
+        st.info("Nessun appuntamento registrato")
+
+# ===== TAB 4: GESTIONE =====
+with tab4:
+    subtab1, subtab2 = st.tabs(["Registra paziente", "Registra appuntamento"])
+    
+    with subtab1:
+        st.subheader("➕ Registra nuovo paziente")
+        with st.form("form_paziente"):
+            col1, col2 = st.columns(2)
+            nome = col1.text_input("Nome")
+            cognome = col2.text_input("Cognome")
+            
+            col1, col2 = st.columns(2)
+            telefono = col1.text_input("Telefono")
+            data_nascita = col2.date_input("Data di nascita")
+            
+            submitted = st.form_submit_button("Registra paziente")
+            
+            if submitted and nome and cognome:
+                nuovo_id = int(df_pazienti['ID'].max() + 1) if len(df_pazienti) > 0 else 1
+                nuovo = pd.DataFrame({
+                    'ID': [nuovo_id],
+                    'Nome': [nome],
+                    'Cognome': [cognome],
+                    'Telefono': [telefono],
+                    'Data nascita': [data_nascita.strftime('%Y-%m-%d')]
+                })
+                df_pazienti = pd.concat([df_pazienti, nuovo], ignore_index=True)
+                salva_pazienti(df_pazienti)
+                st.success(f"✅ Paziente registrato: {nome} {cognome}")
+                st.rerun()
+            elif submitted:
+                st.error("⚠️ Inserisci nome e cognome")
+    
+    with subtab2:
+        st.subheader("➕ Registra nuovo appuntamento")
+        
+        col1, col2 = st.columns(2)
+        
+        paziente_id = col1.selectbox(
+            "Paziente",
+            options=df_pazienti['ID'],
+            format_func=lambda x: f"{df_pazienti[df_pazienti['ID']==x]['Nome'].values[0]} {df_pazienti[df_pazienti['ID']==x]['Cognome'].values[0]}"
+        )
+        
+        tipo = col2.selectbox("Tipo di trattamento", ['Igiene', 'Conservativa', 'Ortodonzia', 'Estrazione', 'Altro'])
+        
+        data_selezionata = st.date_input("Seleziona data", value=datetime.now() + timedelta(days=1))
+        
+        # Calcola slot disponibili
+        slot_disponibili = calcola_slot_disponibili(pd.Timestamp(data_selezionata), tipo, df_appuntamenti)
+        
+        if slot_disponibili:
+            slot_labels = [s.strftime('%H:%M') for s in slot_disponibili]
+            slot_selezionato = st.selectbox("Seleziona orario disponibile", range(len(slot_disponibili)), format_func=lambda i: slot_labels[i])
+            
+            importo = st.number_input("Importo (€)", min_value=0, value=100)
+            
+            if st.button("Registra appuntamento"):
+                dt_completo = slot_disponibili[slot_selezionato]
+                nuovo = pd.DataFrame({
+                    'Data': [dt_completo],
+                    'Paziente ID': [paziente_id],
+                    'Tipo': [tipo],
+                    'Importo': [importo]
+                })
+                df_appuntamenti = pd.concat([df_appuntamenti, nuovo], ignore_index=True)
+                salva_appuntamenti(df_appuntamenti)
+                st.success(f"✅ Appuntamento registrato: {dt_completo.strftime('%d/%m/%Y %H:%M')}")
+                st.rerun()
         else:
-            st.error("⚠️ Riempi tutti i campi correttamente")
-
-st.divider()
-
-# --- ULTIMI APPUNTAMENTI REGISTRATI ---
-st.subheader("📋 Ultimi appuntamenti registrati")
-df_display = df_appuntamenti.copy()
-df_display['Data'] = pd.to_datetime(df_display['Data']).dt.strftime('%d/%m/%Y')
-st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-st.divider()
-
-# --- DOWNLOAD DATI ---
-st.subheader("📥 Scarica i dati")
-csv = df_appuntamenti.to_csv(index=False).encode('utf-8')
-st.download_button(
-    label="Scarica appuntamenti in CSV",
-    data=csv,
-    file_name=f"appuntamenti_{datetime.now().strftime('%Y%m%d')}.csv",
-    mime="text/csv"
-)
+            st.warning("❌ Nessuno slot disponibile in questo giorno. Scegli un'altra data.")
+    
+    st.divider()
+    
+    st.subheader("📥 Scarica i dati")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        csv_pazienti = df_pazienti.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Scarica pazienti in CSV",
+            data=csv_pazienti,
+            file_name=f"pazienti_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+    
+    with col2:
+        csv_app = df_appuntamenti.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Scarica appuntamenti in CSV",
+            data=csv_app,
+            file_name=f"appuntamenti_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
