@@ -60,7 +60,7 @@ def calcola_slot_disponibili(data, tipo_trattamento, df_app):
 
 def carica_pazienti():
     if os.path.exists(CSV_PAZIENTI):
-        return pd.read_csv(CSV_PAZIENTI)
+        return pd.read_csv(CSV_PAZIENTI, sep=None, engine='python')
     else:
         return pd.DataFrame({
             'ID': [1, 2, 3, 4, 5],
@@ -72,7 +72,8 @@ def carica_pazienti():
 
 def carica_appuntamenti():
     if os.path.exists(CSV_APPUNTAMENTI):
-        df = pd.read_csv(CSV_APPUNTAMENTI)
+        # sep=None ed engine='python' forzano Pandas a indovinare il separatore corretto (, o ;)
+        df = pd.read_csv(CSV_APPUNTAMENTI, sep=None, engine='python')
         df['Data'] = pd.to_datetime(df['Data'], format='mixed')
         return df
     else:
