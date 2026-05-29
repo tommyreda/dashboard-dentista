@@ -87,11 +87,16 @@ def salva_pazienti(df):
     df.to_csv(CSV_PAZIENTI, index=False)
 
 def salva_appuntamenti(df):
-    df['Data'] = pd.to_datetime(df['Data']).dt.strftime('%Y-%m-%d %H:%M')
-    df.to_csv(CSV_APPUNTAMENTI, index=False)
+    # Utilizza una copia per evitare di alterare il df in memoria
+    df_da_salvare = df.copy()
+    df_da_salvare['Data'] = pd.to_datetime(df_da_salvare['Data']).dt.strftime('%Y-%m-%d %H:%M')
+    df_da_salvare.to_csv(CSV_APPUNTAMENTI, index=False)
 
 df_pazienti = carica_pazienti()
 df_appuntamenti = carica_appuntamenti()
+
+# Sicurezza extra: forza il formato datetime per evitare AttributeError
+df_appuntamenti['Data'] = pd.to_datetime(df_appuntamenti['Data'], format='mixed')
 
 with st.sidebar:
     st.title("⚙️ Studio Dr. Rossi")
@@ -102,6 +107,7 @@ with st.sidebar:
 st.title("📊 Studio Dr. Rossi")
 st.subheader("Dashboard KPI - Maggio 2026")
 
+# Creazione dei tab includendo la nuova sezione Appuntamenti
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "👥 Pazienti", "📅 Appuntamenti", "⚙️ Gestione"])
 
 # ===== TAB 1: DASHBOARD =====
@@ -195,21 +201,41 @@ with tab2:
 
 # ===== TAB 3: APPUNTAMENTI =====
 with tab3:
-    st.subheader("📅 Elenco appuntamenti")
+    st.subheader("📅 Elenco completo appuntamenti")
+    
     if len(df_appuntamenti) > 0:
-        df_app_display = df_appuntamenti.copy()
-        df_app_display['Data'] = pd.to_datetime(df_app_display['Data']).dt.strftime('%d/%m/%Y %H:%M')
-        df_app_display['Paziente'] = df_app_display['Paziente ID'].apply(
-            lambda x: f"{df_pazienti[df_pazienti['ID']==x]['Nome'].values[0]} {df_pazienti[df_pazienti['ID']==x]['Cognome'].values[0]}"
+        # Uniamo l'anagrafica dei pazienti per vedere nome e cognome invece dell'ID
+        df_app_completo = df_appuntamenti.merge(
+            df_pazienti[['ID', 'Nome', 'Cognome']], 
+            left_on='Paziente ID', 
+            right_on='ID', 
+            how='left'
         )
-        st.dataframe(df_app_display[['Data', 'Paziente', 'Tipo', 'Importo']], use_container_width=True, hide_index=True)
+        
+        # Creiamo una colonna unica "Paziente"
+        df_app_completo['Paziente'] = df_app_completo['Nome'] + ' ' + df_app_completo['Cognome']
+        
+        # Ordiniamo per data decrescente (più recenti in alto)
+        df_app_completo = df_app_completo.sort_values(by='Data', ascending=False)
+        
+        # Formattiamo la data per una visualizzazione pulita
+        df_app_completo['Data Formattata'] = df_app_completo['Data'].dt.strftime('%d/%m/%Y %H:%M')
+        
+        # Selezioniamo e rinominiamo le colonne utili per la tabella
+        df_visualizza = df_app_completo[['Data Formattata', 'Paziente', 'Tipo', 'Importo']].rename(
+            columns={'Data Formattata': 'Data e Ora'}
+        )
+        
+        # Mostriamo la tabella degli appuntamenti
+        st.dataframe(df_visualizza, use_container_width=True, hide_index=True)
     else:
-        st.info("Nessun appuntamento registrato")
+        st.info("Nessun appuntamento in archivio.")
 
 # ===== TAB 4: GESTIONE =====
 with tab4:
     subtab1, subtab2 = st.tabs(["Registra paziente", "Registra appuntamento"])
     
+
     with subtab1:
         st.subheader("➕ Registra nuovo paziente")
         with st.form("form_paziente"):
@@ -225,6 +251,8 @@ with tab4:
             
             if submitted and nome and cognome:
                 nuovo_id = int(df_pazienti['ID'].max() + 1) if len(df_pazienti) > 0 else 1
+                
+                # Qui creiamo il dataframe "nuovo"
                 nuovo = pd.DataFrame({
                     'ID': [nuovo_id],
                     'Nome': [nome],
@@ -232,7 +260,10 @@ with tab4:
                     'Telefono': [telefono],
                     'Data nascita': [data_nascita.strftime('%Y-%m-%d')]
                 })
+                
+                # CORRETTO: df_pazienti = pd.concat([df_pazienti, nuovo], ignore_index=True)
                 df_pazienti = pd.concat([df_pazienti, nuovo], ignore_index=True)
+                
                 salva_pazienti(df_pazienti)
                 st.success(f"✅ Paziente registrato: {nome} {cognome}")
                 st.rerun()
