@@ -25,37 +25,47 @@ DURATA_TRATTAMENTI = {
 }
 
 def calcola_slot_disponibili(data, tipo_trattamento, df_app):
-    """Calcola gli slot liberi per una data"""
+    """Calcola gli slot liberi per una data considerando pause e sovrapposizioni"""
     durata = DURATA_TRATTAMENTI.get(tipo_trattamento, 30)
     slot_disponibili = []
     
+    # Orari precisi per controlli esatti (evitano bug su fine giornata e pausa pranzo)
+    inizio_pausa = pd.Timestamp(f"{data.strftime('%Y-%m-%d')} {ORARI_LAVORO['fine_mattina']:02d}:00")
+    fine_pausa = pd.Timestamp(f"{data.strftime('%Y-%m-%d')} {ORARI_LAVORO['inizio_pomeriggio']:02d}:00")
+    fine_lavoro = pd.Timestamp(f"{data.strftime('%Y-%m-%d')} {ORARI_LAVORO['fine_pomeriggio']:02d}:00")
+    
     # Slot da 30 minuti
     for ora in range(ORARI_LAVORO['inizio_mattina'], ORARI_LAVORO['fine_pomeriggio']):
-        # Salta pausa pranzo
-        if ora >= ORARI_LAVORO['fine_mattina'] and ora < ORARI_LAVORO['inizio_pomeriggio']:
-            continue
-        
         for minuti in [0, 30]:
             dt_slot = pd.Timestamp(f"{data.strftime('%Y-%m-%d')} {ora:02d}:{minuti:02d}")
             dt_fine = dt_slot + timedelta(minutes=durata)
             
-            # Controlla se slot è occupato
-            appuntamenti_giorno = df_app[df_app['Data'].dt.date == data.date()]
-            occupato = False
-            
-            for _, app in appuntamenti_giorno.iterrows():
-                app_inizio = app['Data']
-                app_durata = DURATA_TRATTAMENTI.get(app['Tipo'], 30)
-                app_fine = app_inizio + timedelta(minutes=app_durata)
+            # Regola 1: Nessuna sovrapposizione con la pausa pranzo
+            if (dt_slot < fine_pausa) and (dt_fine > inizio_pausa):
+                continue
                 
-                # Controlla sovrapposizione
-                if (dt_slot < app_fine) and (dt_fine > app_inizio):
-                    occupato = True
-                    break
+            # Regola 2: Non sforare l'orario di chiusura
+            if dt_fine > fine_lavoro:
+                continue
             
-            if not occupato and dt_fine.hour < ORARI_LAVORO['fine_pomeriggio']:
+            # Controllo sovrapposizione appuntamenti
+            occupato = False
+            if not df_app.empty and 'Data' in df_app.columns:
+                appuntamenti_giorno = df_app[df_app['Data'].dt.date == data.date()]
+                
+                for _, app in appuntamenti_giorno.iterrows():
+                    app_inizio = app['Data']
+                    app_durata = DURATA_TRATTAMENTI.get(app['Tipo'], 30)
+                    app_fine = app_inizio + timedelta(minutes=app_durata)
+                    
+                    # Controlla intersezione temporale
+                    if (dt_slot < app_fine) and (dt_fine > app_inizio):
+                        occupato = True
+                        break
+            
+            if not occupato:
                 slot_disponibili.append(dt_slot)
-    
+                
     return slot_disponibili
 
 def carica_pazienti():
@@ -73,30 +83,40 @@ def carica_pazienti():
 def carica_appuntamenti():
     if os.path.exists(CSV_APPUNTAMENTI):
         df = pd.read_csv(CSV_APPUNTAMENTI)
-        df['Data'] = pd.to_datetime(df['Data'], format='mixed')
-        return df
+        # errors='coerce' previene eccezioni se il formato date varia leggermente
+        df['Data'] = pd.to_datetime(df['Data'], errors='coerce') 
+        # Scarta eventuali righe in cui la conversione ha fallito
+        return df.dropna(subset=['Data'])
     else:
-        return pd.DataFrame({
+        df = pd.DataFrame({
             'Data': ['2026-05-01 09:00', '2026-05-05 10:30', '2026-05-10 14:00', '2026-05-15 11:00', '2026-05-20 15:30', '2026-05-25 09:30'],
             'Paziente ID': [1, 2, 1, 3, 4, 5],
             'Tipo': ['Igiene', 'Conservativa', 'Igiene', 'Ortodonzia', 'Estrazione', 'Igiene'],
             'Importo': [80, 150, 80, 200, 120, 80],
         })
+        df['Data'] = pd.to_datetime(df['Data'])
+        return df
 
 def salva_pazienti(df):
     df.to_csv(CSV_PAZIENTI, index=False)
 
 def salva_appuntamenti(df):
-    # Utilizza una copia per evitare di alterare il df in memoria
     df_da_salvare = df.copy()
     df_da_salvare['Data'] = pd.to_datetime(df_da_salvare['Data']).dt.strftime('%Y-%m-%d %H:%M')
     df_da_salvare.to_csv(CSV_APPUNTAMENTI, index=False)
 
+# Caricamento Globale dei Dati
 df_pazienti = carica_pazienti()
 df_appuntamenti = carica_appuntamenti()
 
-# Sicurezza extra: forza il formato datetime per evitare AttributeError
-df_appuntamenti['Data'] = pd.to_datetime(df_appuntamenti['Data'], format='mixed')
+# Funzione Helper robusta per visualizzare nomi dei pazienti (evita IndexError)
+def format_nome_paziente(paz_id):
+    if df_pazienti.empty:
+        return f"ID {paz_id}"
+    match = df_pazienti[df_pazienti['ID'] == paz_id]
+    if not match.empty:
+        return f"{match.iloc[0]['Nome']} {match.iloc[0]['Cognome']}"
+    return f"Sconosciuto (ID {paz_id})"
 
 with st.sidebar:
     st.title("⚙️ Studio Dr. Rossi")
@@ -107,7 +127,6 @@ with st.sidebar:
 st.title("📊 Studio Dr. Rossi")
 st.subheader("Dashboard KPI - Maggio 2026")
 
-# Creazione dei tab includendo la nuova sezione Appuntamenti
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "👥 Pazienti", "📅 Appuntamenti", "⚙️ Gestione"])
 
 # ===== TAB 1: DASHBOARD =====
@@ -121,7 +140,6 @@ with tab1:
     st.divider()
     
     col1, col2 = st.columns(2)
-    
     with col1:
         st.subheader("📈 Incasso mensile 2026")
         dati_incasso = pd.DataFrame({
@@ -181,52 +199,49 @@ with tab2:
     st.dataframe(df_pazienti, use_container_width=True, hide_index=True)
     
     st.divider()
-    
     st.subheader("📋 Storico paziente")
-    paziente_selezionato = st.selectbox(
-        "Seleziona paziente",
-        options=df_pazienti['ID'],
-        format_func=lambda x: f"{df_pazienti[df_pazienti['ID']==x]['Nome'].values[0]} {df_pazienti[df_pazienti['ID']==x]['Cognome'].values[0]}"
-    )
     
-    storico = df_appuntamenti[df_appuntamenti['Paziente ID'] == paziente_selezionato]
-    if len(storico) > 0:
-        st.write(f"**Appuntamenti totali:** {len(storico)}")
-        st.write(f"**Spesa totale:** €{storico['Importo'].sum():.0f}")
-        df_storico_display = storico.copy()
-        df_storico_display['Data'] = pd.to_datetime(df_storico_display['Data']).dt.strftime('%d/%m/%Y %H:%M')
-        st.dataframe(df_storico_display[['Data', 'Tipo', 'Importo']], use_container_width=True, hide_index=True)
+    if not df_pazienti.empty:
+        paziente_selezionato = st.selectbox(
+            "Seleziona paziente",
+            options=df_pazienti['ID'].tolist(),
+            format_func=format_nome_paziente
+        )
+        
+        storico = df_appuntamenti[df_appuntamenti['Paziente ID'] == paziente_selezionato]
+        if len(storico) > 0:
+            st.write(f"**Appuntamenti totali:** {len(storico)}")
+            st.write(f"**Spesa totale:** €{storico['Importo'].sum():.0f}")
+            df_storico_display = storico.copy()
+            df_storico_display['Data'] = pd.to_datetime(df_storico_display['Data']).dt.strftime('%d/%m/%Y %H:%M')
+            st.dataframe(df_storico_display[['Data', 'Tipo', 'Importo']], use_container_width=True, hide_index=True)
+        else:
+            st.info("Nessun appuntamento registrato")
     else:
-        st.info("Nessun appuntamento registrato")
+        st.warning("Nessun paziente registrato nel database.")
 
 # ===== TAB 3: APPUNTAMENTI =====
 with tab3:
     st.subheader("📅 Elenco completo appuntamenti")
     
-    if len(df_appuntamenti) > 0:
-        # Uniamo l'anagrafica dei pazienti per vedere nome e cognome invece dell'ID
+    if not df_appuntamenti.empty:
         df_app_completo = df_appuntamenti.merge(
             df_pazienti[['ID', 'Nome', 'Cognome']], 
             left_on='Paziente ID', 
             right_on='ID', 
             how='left'
         )
-        
-        # Creiamo una colonna unica "Paziente"
+        # Gestione pazienti cancellati o non trovati
+        df_app_completo['Nome'] = df_app_completo['Nome'].fillna("Sconosciuto")
+        df_app_completo['Cognome'] = df_app_completo['Cognome'].fillna("")
         df_app_completo['Paziente'] = df_app_completo['Nome'] + ' ' + df_app_completo['Cognome']
         
-        # Ordiniamo per data decrescente (più recenti in alto)
         df_app_completo = df_app_completo.sort_values(by='Data', ascending=False)
-        
-        # Formattiamo la data per una visualizzazione pulita
         df_app_completo['Data Formattata'] = df_app_completo['Data'].dt.strftime('%d/%m/%Y %H:%M')
         
-        # Selezioniamo e rinominiamo le colonne utili per la tabella
         df_visualizza = df_app_completo[['Data Formattata', 'Paziente', 'Tipo', 'Importo']].rename(
             columns={'Data Formattata': 'Data e Ora'}
         )
-        
-        # Mostriamo la tabella degli appuntamenti
         st.dataframe(df_visualizza, use_container_width=True, hide_index=True)
     else:
         st.info("Nessun appuntamento in archivio.")
@@ -234,7 +249,6 @@ with tab3:
 # ===== TAB 4: GESTIONE =====
 with tab4:
     subtab1, subtab2 = st.tabs(["Registra paziente", "Registra appuntamento"])
-    
 
     with subtab1:
         st.subheader("➕ Registra nuovo paziente")
@@ -245,70 +259,67 @@ with tab4:
             
             col1, col2 = st.columns(2)
             telefono = col1.text_input("Telefono")
-            data_nascita = col2.date_input("Data di nascita")
+            data_nascita = col2.date_input("Data di nascita", min_value=datetime(1900, 1, 1))
             
             submitted = st.form_submit_button("Registra paziente")
             
             if submitted and nome and cognome:
-                nuovo_id = int(df_pazienti['ID'].max() + 1) if len(df_pazienti) > 0 else 1
+                nuovo_id = int(df_pazienti['ID'].max() + 1) if not df_pazienti.empty else 1
                 
-                # Qui creiamo il dataframe "nuovo"
                 nuovo = pd.DataFrame({
                     'ID': [nuovo_id],
-                    'Nome': [nome],
-                    'Cognome': [cognome],
-                    'Telefono': [telefono],
+                    'Nome': [nome.strip()],
+                    'Cognome': [cognome.strip()],
+                    'Telefono': [telefono.strip()],
                     'Data nascita': [data_nascita.strftime('%Y-%m-%d')]
                 })
                 
-                # CORRETTO: df_pazienti = pd.concat([df_pazienti, nuovo], ignore_index=True)
                 df_pazienti = pd.concat([df_pazienti, nuovo], ignore_index=True)
-                
                 salva_pazienti(df_pazienti)
                 st.success(f"✅ Paziente registrato: {nome} {cognome}")
                 st.rerun()
             elif submitted:
                 st.error("⚠️ Inserisci nome e cognome")
-    
+
     with subtab2:
         st.subheader("➕ Registra nuovo appuntamento")
         
-        col1, col2 = st.columns(2)
-        
-        paziente_id = col1.selectbox(
-            "Paziente",
-            options=df_pazienti['ID'],
-            format_func=lambda x: f"{df_pazienti[df_pazienti['ID']==x]['Nome'].values[0]} {df_pazienti[df_pazienti['ID']==x]['Cognome'].values[0]}"
-        )
-        
-        tipo = col2.selectbox("Tipo di trattamento", ['Igiene', 'Conservativa', 'Ortodonzia', 'Estrazione', 'Altro'])
-        
-        data_selezionata = st.date_input("Seleziona data", value=datetime.now() + timedelta(days=1))
-        
-        # Calcola slot disponibili
-        slot_disponibili = calcola_slot_disponibili(pd.Timestamp(data_selezionata), tipo, df_appuntamenti)
-        
-        if slot_disponibili:
-            slot_labels = [s.strftime('%H:%M') for s in slot_disponibili]
-            slot_selezionato = st.selectbox("Seleziona orario disponibile", range(len(slot_disponibili)), format_func=lambda i: slot_labels[i])
+        if not df_pazienti.empty:
+            col1, col2 = st.columns(2)
+            paziente_id = col1.selectbox(
+                "Paziente",
+                options=df_pazienti['ID'].tolist(),
+                format_func=format_nome_paziente
+            )
             
-            importo = st.number_input("Importo (€)", min_value=0, value=100)
+            tipo = col2.selectbox("Tipo di trattamento", ['Igiene', 'Conservativa', 'Ortodonzia', 'Estrazione', 'Altro'])
+            data_selezionata = st.date_input("Seleziona data", value=datetime.now() + timedelta(days=1))
             
-            if st.button("Registra appuntamento"):
-                dt_completo = slot_disponibili[slot_selezionato]
-                nuovo = pd.DataFrame({
-                    'Data': [dt_completo],
-                    'Paziente ID': [paziente_id],
-                    'Tipo': [tipo],
-                    'Importo': [importo]
-                })
-                df_appuntamenti = pd.concat([df_appuntamenti, nuovo], ignore_index=True)
-                salva_appuntamenti(df_appuntamenti)
-                st.success(f"✅ Appuntamento registrato: {dt_completo.strftime('%d/%m/%Y %H:%M')}")
-                st.rerun()
+            slot_disponibili = calcola_slot_disponibili(pd.Timestamp(data_selezionata), tipo, df_appuntamenti)
+            
+            if slot_disponibili:
+                slot_labels = [s.strftime('%H:%M') for s in slot_disponibili]
+                slot_selezionato = st.selectbox("Seleziona orario disponibile", range(len(slot_disponibili)), format_func=lambda i: slot_labels[i])
+                
+                importo = st.number_input("Importo (€)", min_value=0, value=100)
+                
+                if st.button("Registra appuntamento"):
+                    dt_completo = slot_disponibili[slot_selezionato]
+                    nuovo = pd.DataFrame({
+                        'Data': [dt_completo],
+                        'Paziente ID': [paziente_id],
+                        'Tipo': [tipo],
+                        'Importo': [importo]
+                    })
+                    df_appuntamenti = pd.concat([df_appuntamenti, nuovo], ignore_index=True)
+                    salva_appuntamenti(df_appuntamenti)
+                    st.success(f"✅ Appuntamento registrato: {dt_completo.strftime('%d/%m/%Y %H:%M')}")
+                    st.rerun()
+            else:
+                st.warning("❌ Nessuno slot disponibile per questo trattamento nella data selezionata.")
         else:
-            st.warning("❌ Nessuno slot disponibile in questo giorno. Scegli un'altra data.")
-    
+            st.error("Devi prima registrare un paziente.")
+
     st.divider()
     
     st.subheader("📥 Scarica i dati")
